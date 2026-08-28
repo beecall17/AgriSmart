@@ -1,0 +1,13 @@
+product_id,item_name,category,stock_quantity,warehouse_location,unit_price_npr
+PRD-001,Hybrid Maize Seeds,Seeds,2500,Kathmandu,120
+PRD-002,Rice Seeds (IRRI-6),Seeds,1800,Pokhara,85
+PRD-003,Wheat Seeds (Lokwan),Seeds,3200,Biratnagar,95
+PRD-004,Urea Fertilizer,Fertilizer,5000,Kathmandu,45
+PRD-005,DAP Fertilizer,Fertilizer,4200,Biratnagar,60
+PRD-006,Potash,Fertilizer,1500,Pokhara,75
+PRD-007,Organic Compost,Fertilizer,900,Kathmandu,120
+PRD-008,Organic Pesticide,Pesticide,600,Kathmandu,450
+PRD-009,Fungicide (Carbendazim),Pesticide,350,Pokhara,320
+PRD-010,Drip Irrigation Kit,Irrigation,120,Kathmandu,25000
+PRD-011,Sprinkler Set,Irrigation,280,Biratnagar,8500
+PRD-012,Cattle Feed,Animal Husbandry,4000,Biratnagar,150
