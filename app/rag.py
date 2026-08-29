@@ -47,8 +47,14 @@ def get_client() -> chromadb.ClientAPI:
     return chromadb.PersistentClient(path=str(CHROMA_DB_DIR))
 
 
+@functools.lru_cache(maxsize=1)
 def get_collection() -> chromadb.Collection:
-    """Return (creating if needed) the "agri_knowledge_base" Chroma collection."""
+    """Return (creating if needed) the "agri_knowledge_base" Chroma collection.
+
+    Cached per-process so the collection is initialized exactly once; upstream
+    upserts (``ingest_documents``) update the same live collection object, so
+    re-ingestion remains correct without recreating the wrapper.
+    """
     return get_client().get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=embedding_functions.DefaultEmbeddingFunction(),
@@ -227,11 +233,17 @@ def ingest_documents() -> dict:
 # --------------------------------------------------------------------------- #
 # Retrieval
 # --------------------------------------------------------------------------- #
+@functools.lru_cache(maxsize=256)
 def search_knowledge_base(query: str, n_results: int = 3) -> list[dict]:
     """Query the vector store and return the most relevant text chunks.
 
     Each result is a dict with the chunk text, its metadata, and the distance
     score (lower is more similar under cosine).
+
+    In-process response cache: identical ``(query, n_results)`` pairs are served
+    straight from memory without re-touching Chroma or re-embedding. Call
+    ``search_knowledge_base.cache_clear()`` after re-ingesting documents so
+    stale results are not served.
     """
     collection = get_collection()
     result = collection.query(query_texts=[query], n_results=n_results)

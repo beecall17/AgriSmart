@@ -1,4 +1,5 @@
 import logging
+from collections import OrderedDict
 
 from pydantic import BaseModel, Field
 import instructor
@@ -54,6 +55,40 @@ RAG_FALLBACK_CONTEXT = (
 )
 
 
+# Maximum number of FulfillmentDecision objects kept in memory.
+DECISION_CACHE_MAXSIZE = 128
+
+# Marker used by fallback decisions so they are never cached: a transient
+# failure must not be replayed for later (potentially healthy) identical
+# requests.
+FALLBACK_ITEM_NAME = "Unavailable — system error"
+
+_decision_cache: "OrderedDict[str, FulfillmentDecision]" = OrderedDict()
+
+
+def _normalize_prompt(user_prompt: str) -> str:
+    """Normalize a request for cache-keying (whitespace/case-insensitive)."""
+    return " ".join(user_prompt.strip().casefold().split())
+
+
+def is_cached(user_prompt: str) -> bool:
+    """Return True when an identical request is already in the decision cache."""
+    if not user_prompt or not user_prompt.strip():
+        return False
+    return _normalize_prompt(user_prompt) in _decision_cache
+
+
+def clear_decision_cache() -> None:
+    """Drop every cached decision (call after knowledge-base re-ingestion)."""
+    _decision_cache.clear()
+    logger.info("Cleared the agent decision cache.")
+
+
+def decision_cache_info() -> dict[str, int]:
+    """Return cache usage statistics for the UI / diagnostics."""
+    return {"size": len(_decision_cache), "maxsize": DECISION_CACHE_MAXSIZE}
+
+
 def _fallback_decision(
     user_prompt: str,
     error: Exception | None = None,
@@ -70,7 +105,7 @@ def _fallback_decision(
         detail,
     )
     return FulfillmentDecision(
-        item_name="Unavailable — system error",
+        item_name=FALLBACK_ITEM_NAME,
         quantity_requested=0,
         can_fulfill_from_stock=False,
         estimated_delivery_days=0.0,
@@ -144,12 +179,27 @@ def analyze_supply_request(
     from ``build_rag_context``) to reuse retrieval already performed by the
     caller instead of triggering a second knowledge-base lookup.
 
+    Hash-based response cache: identical requests (compared case-insensitively
+    and whitespace-insensitively, per ``is_cached``) are served instantly from
+    the in-process cache, skipping the LLM call entirely. Call
+    ``clear_decision_cache()`` after re-ingesting the knowledge base.
+
     Failure-safe: any error during RAG retrieval, LiteLLM, or Instructor
     validation yields a graceful ``FulfillmentDecision`` fallback object instead
-    of raising an exception back to the caller.
+    of raising an exception back to the caller. Fallbacks are never cached.
     """
     if not user_prompt or not user_prompt.strip():
         return _fallback_decision(user_prompt, ValueError("Empty supply request."))
+
+    key = _normalize_prompt(user_prompt)
+    cached = _decision_cache.get(key)
+    if cached is not None:
+        _decision_cache.move_to_end(key)
+        logger.info(
+            "Decision cache hit for request %r — returning cached result.",
+            user_prompt[:80],
+        )
+        return cached
 
     if rag_context is None:
         rag_context = build_rag_context(user_prompt)
@@ -193,6 +243,15 @@ def analyze_supply_request(
             type(response).__name__,
         )
         return _fallback_decision(user_prompt)
+
+    # Only genuine model decisions are cached; fallback decisions (e.g. from a
+    # transient provider failure) are deliberately skipped so the next identical
+    # query retries the live API instead of replaying the error response.
+    if response.item_name != FALLBACK_ITEM_NAME:
+        _decision_cache[key] = response
+        _decision_cache.move_to_end(key)
+        while len(_decision_cache) > DECISION_CACHE_MAXSIZE:
+            _decision_cache.popitem(last=False)
 
     return response
 

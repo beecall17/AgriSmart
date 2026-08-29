@@ -12,9 +12,16 @@ Run from the project root:
 import logging
 from pathlib import Path
 
+import pandas as pd
 import streamlit as st
 
-from app.agent import analyze_supply_request, build_rag_context
+from app.agent import (
+    analyze_supply_request,
+    build_rag_context,
+    clear_decision_cache,
+    decision_cache_info,
+    is_cached,
+)
 from app.config import DEFAULT_MODEL
 from app.rag import (
     COLLECTION_NAME,
@@ -95,6 +102,25 @@ def _simplify_results(results: list[dict]) -> list[dict]:
     return simplified
 
 
+# --------------------------------------------------------------------------- #
+# Cached data loaders (static enterprise files are read once, not per rerun)
+# --------------------------------------------------------------------------- #
+@st.cache_data(show_spinner=False)
+def load_inventory_frame(csv_path: str) -> pd.DataFrame:
+    """Load the inventory CSV into a DataFrame, memoized across reruns.
+
+    The file path (a str) is the cache key; results are pickled by Streamlit so
+    repeated reruns and identical loads skip disk entirely.
+    """
+    return pd.read_csv(csv_path)
+
+
+@st.cache_data(show_spinner=False)
+def load_sop_text(md_path: str) -> str:
+    """Load the logistics SOP markdown as text, memoized across reruns."""
+    return Path(md_path).read_text(encoding="utf-8")
+
+
 # Ensure the local CSV/SOP files are surfaced in the vector store before use.
 _ensure_ingested()
 
@@ -164,28 +190,41 @@ def run_pipeline(user_query: str) -> None:
 
     Failure-safe at every layer: RAG search, context assembly, and the
     structured-agent call are individually guarded so the app never crashes.
+
+    Performance: repeated identical requests hit the agent's response cache
+    (``is_cached``), skipping both the vector search and the LLM call.
     """
     logger.info("Starting pipeline for request: %r", user_query)
 
+    from_cache = is_cached(user_query)
+    if from_cache:
+        logger.info(
+            "Request %r found in decision cache — skipping RAG/LLM work.",
+            user_query[:80],
+        )
+
     # 1. Retrieve relevant context from the local CSV/SOP knowledge base.
     results: list[dict] = []
-    try:
-        with st.spinner("🔍 Searching the knowledge base (inventory + SOP)..."):
-            results = search_knowledge_base(user_query, n_results=N_RESULTS)
-        logger.info("Retrieved %d chunks from the knowledge base.", len(results))
-    except Exception as exc:
-        logger.warning("RAG retrieval failed: %s", exc)
-        st.warning("⚠️ Knowledge-base search hit a snag — continuing with best-effort context.")
-        results = []
+    if not from_cache:
+        try:
+            with st.spinner("🔍 Searching the knowledge base (inventory + SOP)..."):
+                results = search_knowledge_base(user_query, n_results=N_RESULTS)
+            logger.info("Retrieved %d chunks from the knowledge base.", len(results))
+        except Exception as exc:
+            logger.warning("RAG retrieval failed: %s", exc)
+            st.warning("⚠️ Knowledge-base search hit a snag — continuing with best-effort context.")
+            results = []
 
     # 2. Format the retrieved chunks into the context block for the agent.
-    try:
-        rag_context = build_rag_context(
-            user_query, n_results=N_RESULTS, results=results
-        )
-    except Exception as exc:
-        logger.warning("Could not assemble RAG context: %s", exc)
-        rag_context = "[Knowledge-base context is temporarily unavailable.]"
+    rag_context = None
+    if not from_cache:
+        try:
+            rag_context = build_rag_context(
+                user_query, n_results=N_RESULTS, results=results
+            )
+        except Exception as exc:
+            logger.warning("Could not assemble RAG context: %s", exc)
+            rag_context = "[Knowledge-base context is temporarily unavailable.]"
 
     # 3. Pass query + context to the structured agent and validate the response.
     decision_data = None
@@ -212,6 +251,7 @@ def run_pipeline(user_query: str) -> None:
             "decision": decision_data,
             "results": simplified,
             "error": error,
+            "from_cache": from_cache,
         }
     )
     logger.info("Pipeline finished; assistant message stored.")
@@ -220,6 +260,9 @@ def run_pipeline(user_query: str) -> None:
 def render_decision(message: dict) -> None:
     """Render a stored assistant message (Pydantic fields + RAG context)."""
     decision = message.get("decision")
+
+    if message.get("from_cache"):
+        st.caption("⚡ **Served from response cache** — identical request was answered before (no new LLM call).")
 
     if decision is None:
         st.error("❌ The agent could not produce a structured decision.")
@@ -247,7 +290,10 @@ def render_decision(message: dict) -> None:
     with st.expander("🔍 Retrieved context (RAG)", expanded=False):
         results = message.get("results") or []
         if not results:
-            st.caption("No knowledge-base chunks were retrieved for this query.")
+            st.caption(
+                "No knowledge-base chunks retrieved for this query. "
+                "⚠️ This may be a cached response served without re-querying."
+            )
         for i, hit in enumerate(results, start=1):
             section = f" · {hit['section']}" if hit.get("section") else ""
             extra = ""
@@ -280,6 +326,13 @@ with st.sidebar:
         st.metric("Vector DB chunks", "unavailable")
         st.caption(f"⚠️ Vector DB error: {exc}")
 
+    cache_info = decision_cache_info()
+    st.metric(
+        "🧠 Cached responses",
+        f"{cache_info['size']}/{cache_info['maxsize']}",
+    )
+    st.caption("Identical requests are served instantly without re-hitting the LLM.")
+
     st.write(f"**Active model:** `{DEFAULT_MODEL}`")
 
     st.subheader("📁 Active Data Sources")
@@ -289,16 +342,40 @@ with st.sidebar:
         else:
             st.write(f"❌ `{path.name}` — missing")
 
+    try:
+        inv_df = load_inventory_frame(str(INVENTORY_CSV_PATH))
+        sop_text = load_sop_text(str(LOGISTICS_SOP_PATH))
+        st.write(
+            f"&nbsp;&nbsp;&nbsp;• {len(inv_df)} products · "
+            f"{len(inv_df.columns)} columns (cached)"
+        )
+        st.write(f"&nbsp;&nbsp;&nbsp;• {len(sop_text.splitlines())} SOP lines (cached)")
+    except Exception as exc:
+        st.caption(f"⚠️ Could not load source preview: {exc}")
+
     source_stats = _collection_stats()
     if source_stats:
         for source, count in sorted(source_stats.items()):
             st.write(f"&nbsp;&nbsp;&nbsp;• `{source}` — {count} chunk(s)")
+
+    with st.expander("📋 Data preview (cached)"):
+        try:
+            inv_df = load_inventory_frame(str(INVENTORY_CSV_PATH))
+            st.dataframe(inv_df.head(5), use_container_width=True)
+            sop_text = load_sop_text(str(LOGISTICS_SOP_PATH))
+            st.caption(f"[SOP] {len(sop_text.splitlines())} lines loaded")
+        except Exception as exc:
+            st.caption(f"⚠️ Preview unavailable: {exc}")
 
     st.divider()
 
     if st.button("♻️ Re-ingest knowledge base", use_container_width=True):
         with st.spinner("Re-ingesting enterprise files..."):
             ingest_documents()
+            # Invalidate every cache that depends on knowledge-base contents.
+            clear_decision_cache()
+            search_knowledge_base.cache_clear()
+            st.cache_data.clear()
             st.session_state["agri_ingested"] = True
         st.success("Knowledge base refreshed.")
         st.rerun()
