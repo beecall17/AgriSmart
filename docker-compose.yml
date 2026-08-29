@@ -1,0 +1,40 @@
+# --------------------------------------------------------------------------- #
+# AgriSmart — local production-style deployment
+#
+# Run with:  docker-compose up --build -d
+# Stop with: docker-compose down
+# --------------------------------------------------------------------------- #
+
+services:
+  agrismart:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: agrismart:latest
+    container_name: agrismart
+    ports:
+      # <host>:<container>
+      - "8501:8501"
+    environment:
+      # Values are substituted from the project root `.env` file (docker compose
+      # reads it automatically). The `:-` fallback keeps startup non-fatal even
+      # if a key is missing — the app degrades gracefully without one.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      # OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      DEFAULT_MODEL: ${DEFAULT_MODEL:-gemini/gemini-3.6-flash}
+    volumes:
+      # Persist the Chroma vector store across container restarts so the RAG
+      # knowledge base is not re-generated from scratch every time.
+      - chroma_data:/app/chroma_db
+      # Bind-mount the enterprise files so edits to data/* are picked up live.
+      - ./data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  chroma_data:

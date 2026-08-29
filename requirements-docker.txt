@@ -1,0 +1,6 @@
+streamlit
+chromadb
+litellm
+instructor
+pydantic
+pandas

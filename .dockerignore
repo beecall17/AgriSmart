@@ -1,0 +1,38 @@
+# --------------------------------------------------------------------------- #
+# AgriSmart — Docker build context exclusions
+# --------------------------------------------------------------------------- #
+
+# Version control
+.git
+.gitignore
+
+# Secrets (never ship local API keys into the image)
+.env
+.env.*
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Vector database (rebuilt/regenerated at runtime, persisted via a volume)
+chroma_db/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Containerization tooling (avoid nested copies)
+Dockerfile
+.dockerignore
+docker-compose.yml
+
+# Local development notes
+JOURNAL.md
+
+# OS / editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
