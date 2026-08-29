@@ -31,3 +31,8 @@ The goal of this experiment was to integrate a local RAG retrieval system (`app.
 ### **What Went Wrong**
 * **Disk/CPU Offloading Bottleneck:** Due to hardware memory limitations, the system RAM was insufficient to hold the full 3-billion-parameter model weights. Hugging Face automatically triggered a fallback, offloading model components to the local disk/SSD. Because transformer text generation requires sequential, token-by-token processing, constantly reading weights from disk created a severe I/O bottleneck, freezing the execution indefinitely after reaching the generation step.
 * **Pipeline Configuration Conflict:** The model's internal base configuration (`config.json`) hardcoded a default `max_length=20` parameter. This conflicted with the explicit `max_new_tokens` passed during pipeline calls, generating persistent deprecation and parameter-precedence warnings.
+
+## Experimental Log: Evaluation of ONNX Model Optimization
+**Decision:** Skipped ONNX Runtime optimization.
+
+**Rationale:** Because the application successfully shifted from local Hugging Face execution to a hybrid cloud API model (via LiteLLM/Instructor), text generation and structured extraction are managed remotely. ONNX optimization requires local model weight files (.pt or .bin) to compile graph structures for local execution runtimes (like CUDA, DirectML, or CPU execution providers). Since no raw local LLM inference engine is bundled in the deployment target, ONNX optimization is architecturally irrelevant.
