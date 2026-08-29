@@ -10,7 +10,7 @@ print(f"Loading local model '{MODEL_NAME}' via Hugging Face Transformers...")
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
 model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
-    dtype=torch.float32,  # Use float32 for stable CPU execution if needed
+    dtype=torch.float32,  # Use float32 for stable CPU execution
     device_map="auto"
 )
 
@@ -40,6 +40,7 @@ def generate_local_response(prompt: str, max_new_tokens: int = 256) -> str:
     outputs = generator(
         formatted_prompt,
         max_new_tokens=max_new_tokens,
+        max_length=None,
         temperature=0.7,
         do_sample=True,
         pad_token_id=tokenizer.eos_token_id
