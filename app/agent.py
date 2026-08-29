@@ -31,10 +31,20 @@ def _ensure_knowledge_ingested() -> None:
     ingest_documents()
 
 
-def build_rag_context(user_prompt: str, n_results: int = 4) -> str:
-    """Retrieve relevant inventory/SOP chunks and format them for the LLM."""
-    _ensure_knowledge_ingested()
-    results = search_knowledge_base(user_prompt, n_results=n_results)
+def build_rag_context(
+    user_prompt: str,
+    n_results: int = 4,
+    results: list[dict] | None = None,
+) -> str:
+    """Retrieve relevant inventory/SOP chunks and format them for the LLM.
+
+    Pass pre-retrieved chunks via ``results`` (the format returned by
+    ``search_knowledge_base``) to reuse a lookup already performed by the
+    caller instead of hitting the vector store a second time.
+    """
+    if results is None:
+        _ensure_knowledge_ingested()
+        results = search_knowledge_base(user_prompt, n_results=n_results)
 
     if not results:
         return "[No relevant knowledge base context was found for this query.]"
@@ -50,13 +60,21 @@ def build_rag_context(user_prompt: str, n_results: int = 4) -> str:
     return "\n\n".join(lines)
 
 
-def analyze_supply_request(user_prompt: str) -> FulfillmentDecision:
+def analyze_supply_request(
+    user_prompt: str,
+    rag_context: str | None = None,
+) -> FulfillmentDecision:
     """
     Retrieves relevant context from the AgriSmart knowledge base (inventory CSV
     + logistics SOPs), then sends it — alongside the user's supply request — to
     the LLM through Instructor, which enforces a structured FulfillmentDecision.
+
+    ``rag_context`` is optional: supply a pre-formatted context string (e.g.
+    from ``build_rag_context``) to reuse retrieval already performed by the
+    caller instead of triggering a second knowledge-base lookup.
     """
-    rag_context = build_rag_context(user_prompt)
+    if rag_context is None:
+        rag_context = build_rag_context(user_prompt)
 
     system_prompt = (
         "You are an AI logistics assistant for an agricultural cooperative. "
