@@ -9,6 +9,7 @@ Run from the project root:
     python -m streamlit run app/main.py
 """
 
+import logging
 from pathlib import Path
 
 import streamlit as st
@@ -28,6 +29,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 N_RESULTS = 4  # number of knowledge-base chunks retrieved per query
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 st.set_page_config(
     page_title="AgriSmart | Supply Chain Assistant",
     page_icon="🌾",
@@ -40,6 +47,8 @@ st.set_page_config(
 # --------------------------------------------------------------------------- #
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "form_error" not in st.session_state:
+    st.session_state.form_error = None
 
 
 # --------------------------------------------------------------------------- #
@@ -91,43 +100,121 @@ _ensure_ingested()
 
 
 # --------------------------------------------------------------------------- #
+# Input validation
+# --------------------------------------------------------------------------- #
+def validate_query(query: str | None) -> tuple[bool, str]:
+    """Validate a field-agent supply request before it enters the pipeline.
+
+    Returns ``(valid, message)``; when ``valid`` is False, ``message`` is a
+    user-friendly explanation shown as a warning banner.
+    """
+    if query is None or not query.strip():
+        return False, (
+            "Your request appears to be empty. Please describe the item and "
+            'quantity you need (e.g., "100 bags of Urea for Pokhara").'
+        )
+
+    query_clean = query.strip()
+
+    if "\x00" in query_clean or any(ord(ch) < 32 for ch in query_clean):
+        return False, (
+            "Your request contains unsupported characters. Please re-enter it "
+            "using plain text (letters, numbers, and basic punctuation)."
+        )
+
+    if len(query_clean) < 3:
+        return False, (
+            "Your request is too short to process. Please include the item "
+            'name and quantity (e.g., "100 bags of Urea").'
+        )
+
+    if len(query_clean) > 500:
+        return False, (
+            "Your request is too long to process in one message. "
+            "Please keep it under 500 characters."
+        )
+
+    if not any(ch.isalnum() for ch in query_clean):
+        return False, (
+            "Your request does not contain any letters or numbers. Please "
+            "describe the supply item you need using plain text."
+        )
+
+    return True, ""
+
+
+def submit_query(query: str) -> None:
+    """Validate a user request; run the pipeline or store a warning banner."""
+    valid, message = validate_query(query)
+    if not valid:
+        st.session_state.form_error = message
+        logger.info("Rejected invalid supply request: %s", message)
+        return
+    st.session_state.form_error = None
+    st.session_state.messages.append({"role": "user", "content": query})
+    run_pipeline(query)
+
+
+# --------------------------------------------------------------------------- #
 # Request pipeline
 # --------------------------------------------------------------------------- #
 def run_pipeline(user_query: str) -> None:
     """RAG-retrieve relevant context, then ask the structured agent for a
     FulfillmentDecision, and store the outcome in the conversation history.
+
+    Failure-safe at every layer: RAG search, context assembly, and the
+    structured-agent call are individually guarded so the app never crashes.
     """
+    logger.info("Starting pipeline for request: %r", user_query)
+
     # 1. Retrieve relevant context from the local CSV/SOP knowledge base.
     results: list[dict] = []
-    with st.spinner("Searching the knowledge base (inventory + SOP)..."):
-        try:
+    try:
+        with st.spinner("🔍 Searching the knowledge base (inventory + SOP)..."):
             results = search_knowledge_base(user_query, n_results=N_RESULTS)
-        except Exception as exc:
-            st.warning(f"⚠️ RAG retrieval failed ({exc}) — continuing without context.")
+        logger.info("Retrieved %d chunks from the knowledge base.", len(results))
+    except Exception as exc:
+        logger.warning("RAG retrieval failed: %s", exc)
+        st.warning("⚠️ Knowledge-base search hit a snag — continuing with best-effort context.")
+        results = []
 
     # 2. Format the retrieved chunks into the context block for the agent.
-    rag_context = build_rag_context(
-        user_query, n_results=N_RESULTS, results=results
-    )
+    try:
+        rag_context = build_rag_context(
+            user_query, n_results=N_RESULTS, results=results
+        )
+    except Exception as exc:
+        logger.warning("Could not assemble RAG context: %s", exc)
+        rag_context = "[Knowledge-base context is temporarily unavailable.]"
 
     # 3. Pass query + context to the structured agent and validate the response.
     decision_data = None
     error = None
-    with st.spinner("Analyzing request with the structured agent..."):
-        try:
+    try:
+        with st.spinner("🤖 Analyzing request with the structured agent..."):
             decision = analyze_supply_request(user_query, rag_context=rag_context)
             decision_data = decision.model_dump()
-        except Exception as exc:
-            error = str(exc)
+        logger.info("Structured fulfillment decision produced.")
+    except Exception as exc:
+        logger.error("Agent pipeline failed unexpectedly: %s", exc, exc_info=True)
+        error = str(exc)
+
+    # 4. Safely store the result (and any diagnostic error) in history.
+    try:
+        simplified = _simplify_results(results)
+    except Exception as exc:
+        logger.warning("Could not simplify retrieval results for display: %s", exc)
+        simplified = []
 
     st.session_state.messages.append(
         {
             "role": "assistant",
             "decision": decision_data,
-            "results": _simplify_results(results),
+            "results": simplified,
             "error": error,
         }
     )
+    logger.info("Pipeline finished; assistant message stored.")
 
 
 def render_decision(message: dict) -> None:
@@ -233,6 +320,9 @@ st.caption(
     "and dispatch SOPs are answered with RAG-grounded context."
 )
 
+if st.session_state.get("form_error"):
+    st.warning(f"⚠️ {st.session_state['form_error']}")
+
 st.markdown("**Try an example:**")
 example_cols = st.columns(3)
 examples = [
@@ -246,8 +336,7 @@ examples = [
 for col, (label, query) in zip(example_cols, examples):
     with col:
         if st.button(label, use_container_width=True):
-            st.session_state.messages.append({"role": "user", "content": query})
-            run_pipeline(query)
+            submit_query(query)
             st.rerun()
 
 st.divider()
@@ -270,6 +359,5 @@ prompt = st.chat_input(
     'Type a supply request, e.g. "I need 100 bags of Urea for the Pokhara depot"'
 )
 if prompt:
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    run_pipeline(prompt)
+    submit_query(prompt)
     st.rerun()

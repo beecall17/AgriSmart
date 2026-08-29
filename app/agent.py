@@ -1,4 +1,5 @@
-import os
+import logging
+
 from pydantic import BaseModel, Field
 import instructor
 from litellm import completion
@@ -7,13 +8,33 @@ from app.config import DEFAULT_MODEL
 from app.rag import ingest_documents, search_knowledge_base
 
 
+logger = logging.getLogger(__name__)
+
+
 # 1. Define the Pydantic schema for structured output
 class FulfillmentDecision(BaseModel):
-    item_name: str = Field(description="Name of the agricultural item requested")
-    quantity_requested: int = Field(description="Quantity requested by the user")
-    can_fulfill_from_stock: bool = Field(description="True if stock is sufficient, false otherwise")
-    estimated_delivery_days: float = Field(description="Estimated delivery days based on regional hubs")
-    recommended_action: str = Field(description="Short operational recommendation for the field agent")
+    item_name: str = Field(
+        default="Unknown agricultural item",
+        description="Name of the agricultural item requested",
+    )
+    quantity_requested: int = Field(
+        default=0,
+        ge=0,
+        description="Quantity requested by the user",
+    )
+    can_fulfill_from_stock: bool = Field(
+        default=False,
+        description="True if stock is sufficient, false otherwise",
+    )
+    estimated_delivery_days: float = Field(
+        default=0.0,
+        ge=0,
+        description="Estimated delivery days based on regional hubs",
+    )
+    recommended_action: str = Field(
+        default="Contact the regional hub coordinator for manual review.",
+        description="Short operational recommendation for the field agent",
+    )
 
 
 # 2. Patch OpenAI/LiteLLM client with Instructor
@@ -21,7 +42,49 @@ class FulfillmentDecision(BaseModel):
 client = instructor.from_litellm(completion)
 
 
+# --------------------------------------------------------------------------- #
+# Fallback helpers
+# --------------------------------------------------------------------------- #
+# Context injected when the vector store is unreachable: downstream model calls
+# can still run (and degrade gracefully) instead of raising.
+RAG_FALLBACK_CONTEXT = (
+    "[Knowledge-base retrieval is temporarily unavailable. "
+    "Indicate that live stock levels and SOP details could not be verified "
+    "and recommend manual confirmation with the nearest regional hub.]"
+)
+
+
+def _fallback_decision(
+    user_prompt: str,
+    error: Exception | None = None,
+) -> FulfillmentDecision:
+    """Build a safe, user-friendly FulfillmentDecision when processing fails.
+
+    Used instead of crashing whenever RAG retrieval, LiteLLM, or Instructor
+    raises — the UI can still render a clean, structured result.
+    """
+    detail = f"{type(error).__name__}: {error}" if error else "no error supplied"
+    logger.warning(
+        "Returning fallback FulfillmentDecision for prompt %r (%s).",
+        user_prompt[:80],
+        detail,
+    )
+    return FulfillmentDecision(
+        item_name="Unavailable — system error",
+        quantity_requested=0,
+        can_fulfill_from_stock=False,
+        estimated_delivery_days=0.0,
+        recommended_action=(
+            "Our supply-chain service is temporarily unavailable. Please "
+            "contact the regional hub coordinator directly or retry in a few "
+            "minutes."
+        ),
+    )
+
+
+# --------------------------------------------------------------------------- #
 # 3. RAG context retrieval
+# --------------------------------------------------------------------------- #
 def _ensure_knowledge_ingested() -> None:
     """Make sure the vector store is populated before retrieving.
 
@@ -43,8 +106,16 @@ def build_rag_context(
     caller instead of hitting the vector store a second time.
     """
     if results is None:
-        _ensure_knowledge_ingested()
-        results = search_knowledge_base(user_prompt, n_results=n_results)
+        try:
+            _ensure_knowledge_ingested()
+            results = search_knowledge_base(user_prompt, n_results=n_results)
+        except Exception as exc:
+            logger.warning(
+                "RAG retrieval failed for prompt %r: %s",
+                user_prompt[:80],
+                exc,
+            )
+            return RAG_FALLBACK_CONTEXT
 
     if not results:
         return "[No relevant knowledge base context was found for this query.]"
@@ -72,7 +143,14 @@ def analyze_supply_request(
     ``rag_context`` is optional: supply a pre-formatted context string (e.g.
     from ``build_rag_context``) to reuse retrieval already performed by the
     caller instead of triggering a second knowledge-base lookup.
+
+    Failure-safe: any error during RAG retrieval, LiteLLM, or Instructor
+    validation yields a graceful ``FulfillmentDecision`` fallback object instead
+    of raising an exception back to the caller.
     """
+    if not user_prompt or not user_prompt.strip():
+        return _fallback_decision(user_prompt, ValueError("Empty supply request."))
+
     if rag_context is None:
         rag_context = build_rag_context(user_prompt)
 
@@ -91,14 +169,31 @@ def analyze_supply_request(
         f"KNOWLEDGE BASE CONTEXT (recently retrieved, use as ground truth):\n{rag_context}"
     )
 
-    response = client.chat.completions.create(
-        model=DEFAULT_MODEL,
-        response_model=FulfillmentDecision,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_message},
-        ],
-    )
+    try:
+        response = client.chat.completions.create(
+            model=DEFAULT_MODEL,
+            response_model=FulfillmentDecision,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+        )
+    except Exception as exc:
+        logger.error(
+            "LiteLLM/Instructor call failed for prompt %r: %s — returning fallback.",
+            user_prompt[:80],
+            exc,
+            exc_info=True,
+        )
+        return _fallback_decision(user_prompt, exc)
+
+    if not isinstance(response, FulfillmentDecision):
+        logger.warning(
+            "Instructor returned unexpected type %r — returning fallback.",
+            type(response).__name__,
+        )
+        return _fallback_decision(user_prompt)
+
     return response
 
 
