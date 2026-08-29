@@ -19,3 +19,15 @@
   * Rolling back the repository to discard local virtual environment clutter.
   * Pivoting away from vLLM's strict GPU-only engine requirements for now.
   * Shifting to a standard **Hugging Face Transformers** pipeline (CPU or fallback mode) to fulfill the local model serving objective and keep the project moving forward.
+
+## Experimental Log: Local RAG Pipeline Execution & Performance Bottlenecks
+The goal of this experiment was to integrate a local RAG retrieval system (`app.rag`) with a local causal language model (`app.local_llm`) to handle agricultural supply chain and logistics queries offline.
+
+### **What I Tried**
+* **Model Initialization:** Loaded the `Qwen/Qwen2.5-3B-Instruct` model via Hugging Face Transformers using `torch.float32` precision for stable CPU execution, coupled with `device_map="auto"`.
+* **Pipeline Configuration:** Configured a Hugging Face `text-generation` pipeline wrapped around a custom chat-template prompt builder.
+* **RAG Workflow Execution:** Executed a test query looking up inventory stock quantities and transit times, retrieving matching enterprise chunks from the local vector database, and passing the combined context into the model for inference.
+
+### **What Went Wrong**
+* **Disk/CPU Offloading Bottleneck:** Due to hardware memory limitations, the system RAM was insufficient to hold the full 3-billion-parameter model weights. Hugging Face automatically triggered a fallback, offloading model components to the local disk/SSD. Because transformer text generation requires sequential, token-by-token processing, constantly reading weights from disk created a severe I/O bottleneck, freezing the execution indefinitely after reaching the generation step.
+* **Pipeline Configuration Conflict:** The model's internal base configuration (`config.json`) hardcoded a default `max_length=20` parameter. This conflicted with the explicit `max_new_tokens` passed during pipeline calls, generating persistent deprecation and parameter-precedence warnings.

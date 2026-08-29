@@ -21,7 +21,7 @@ generator = pipeline(
     tokenizer=tokenizer
 )
 
-def generate_local_response(prompt: str, max_new_tokens: int = 256) -> str:
+def generate_local_response(prompt: str, max_new_tokens: int = 128) -> str:
     """
     Generates text locally using the Hugging Face pipeline.
     """
@@ -40,10 +40,10 @@ def generate_local_response(prompt: str, max_new_tokens: int = 256) -> str:
     outputs = generator(
         formatted_prompt,
         max_new_tokens=max_new_tokens,
-        max_length=None,
         temperature=0.7,
         do_sample=True,
-        pad_token_id=tokenizer.eos_token_id
+        pad_token_id=tokenizer.eos_token_id,
+        return_full_text=False  # Crucial: This strips out the input prompt and returns ONLY the new response!
     )
     
     # Extract only the newly generated text response
