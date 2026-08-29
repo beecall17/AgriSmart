@@ -1,32 +1,126 @@
 # AgriSmart: AI-Powered Supply Chain & Inventory Coordinator
 
-> **"Bridging the gap between field requests and warehouse logistics with intelligent RAG and autonomous tool execution."**
+> Bridging the gap between field requests and warehouse logistics with Retrieval-Augmented Generation (RAG) and tool-enabled execution.
 
-## Background & Business Framing
-In regional agricultural distribution, timely access to farm inputs—such as high-yield seeds, fertilizers, and equipment—is critical. Field agents, cooperative managers, and regional depots often struggle with fragmented inventory logs, opaque transit timelines, and complex safety compliance procedures. 
+---
 
-Delays in confirming stock or miscalculating delivery routes lead to costly stockouts during peak agricultural seasons.
+## What is AgriSmart
 
-## The Problem
-Agricultural cooperatives maintain legacy operational files (inventory spreadsheets, warehouse logs, and shipping standard operating procedures) spread across shared drives. When field agents urgently need to verify product availability, check delivery timelines to hubs like Pokhara or Kathmandu, or look up hazardous material handling protocols, they are forced to manually sift through dense documents and disparate database sheets.
+AgriSmart is an end-to-end, production-ready AI assistant and orchestration layer for agricultural logistics and inventory management. It helps field agents, cooperative managers, and depot operators quickly confirm stock, compute delivery estimates, and trigger deterministic actions (queries, lookups, and shipments) while grounding responses in enterprise data.
 
-## Approach & Solution
-**AgriSmart** is an end-to-end, production-ready AI assistant designed to act as a unified copilot for agricultural logistics and inventory management. 
+Key ideas:
+- Ground LLM responses with a local vector DB (RAG) built from CSV exports and SOP documents.
+- Enforce structured outputs using Pydantic + Instructor to produce validated JSON objects instead of free-form text.
+- Execute deterministic tools (inventory queries, shipping calculations) from the agent when needed.
+- Ship as a containerized app with a lightweight Streamlit UI for quick deployment.
 
-Instead of relying on generic chat loops, the system bridges unstructured enterprise knowledge with deterministic execution:
-1. **Unified Model Gateway:** Leverages **LiteLLM** to abstract model providers dynamically.
-2. **Strict Structured Generation:** Uses **Pydantic and Instructor** to guarantee that every LLM response outputs validated JSON schema objects rather than ambiguous conversational text.
-3. **Retrieval-Augmented Generation (RAG):** Ingests mock enterprise data (inventory CSV exports and logistics policy markdown files) into a local vector database to ground responses in real operational files.
-4. **Tool-Enabled Execution:** Empowers the AI agent to execute functions that query live stock databases and compute shipping estimates.
-5. **Production Wrapper:** Containerized with **Docker** and built with a lightweight **Streamlit** user interface optimized for cost-free, scalable cloud deployment.
+
+## Features
+
+- Unified Model Gateway (LiteLLM) to switch or configure model providers.
+- Structured generation: every LLM output follows a JSON schema validated by Pydantic.
+- RAG retrieval from local vector store for factual grounding.
+- Tool-enabled workflows to fetch live stock, compute shipping, and update records.
+- Dockerized for local development and cloud deploys; docker-compose for quick stacks.
+
 
 ## System Architecture
+
 ```text
 [ User / Field Agent ] 
        │
        ▼ (Streamlit Web UI)
 [ FastAPI / Agent Orchestrator ] 
-       ├──> [ Vector Database (RAG Retrieval) ] ──> (Inventory & SOP Docs)
+       ├──> [ Vector Database (RAG Retrieval) ] ──> (Inventory CSVs & SOP Docs)
        ├──> [ Tool Execution Layer ] ────────────> (Live Stock & Logistics Functions)
        └──> [ LiteLLM Gateway / Instructor ] ────> (Structured JSON Output)
+```
+
+
+## Quickstart — Local development
+
+Prerequisites:
+- Python 3.9+ (recommended 3.10 or 3.11)
+- Git
+- (Optional) Docker & docker-compose for containerized runs
+
+1. Clone the repo
+
+   git clone https://github.com/beecall17/AgriSmart.git
+   cd AgriSmart
+
+2. Create a virtual environment and install Python dependencies
+
+   python -m venv .venv
+   source .venv/bin/activate   # macOS / Linux
+   .venv\Scripts\activate     # Windows PowerShell
+   pip install -r requirements.txt
+
+3. Copy environment example and edit
+
+   cp .env.example .env
+   # Edit .env to configure any model provider keys, storage paths, or ports.
+
+4. Prepare data
+
+   Place your inventory CSV exports and SOP markdown files under the `data/` folder. The repository ships with example/mock data in `data/` to exercise the demo.
+
+5. Run the app
+
+- Run with Streamlit (dev)
+
+  streamlit run app/main.py
+
+- Or run with Docker Compose
+
+  docker-compose up --build
+
+The Streamlit UI will open at http://localhost:8501 by default (or the port configured in .env / docker-compose).
+
+
+## Running in Docker
+
+- Build locally: docker build -t agrismart:local .
+- Run with docker-compose: docker-compose up
+
+The Dockerfile and docker-compose.yml are provided to create a minimal runtime that bundles the service and its dependencies.
+
+
+## Configuration
+
+- .env.example contains environment variables used by the app (model provider keys, ports, storage paths).
+- To change the vector DB path or model gateway, edit the corresponding env variables before starting the service.
+
+
+## Project layout (top-level)
+
+- app/           — Streamlit UI and FastAPI orchestrator
+- data/          — Example data, inventory CSVs and SOPs used by the demo RAG pipeline
+- scripts/       — helper scripts for ingestion and dataset creation
+- Dockerfile
+- docker-compose.yml
+- requirements.txt
+
+
+## Development notes
+
+- Structured output is enforced through Pydantic models and Instructor prompts — if you add new agent actions, add matching Pydantic schemas and update the Instructor template.
+- The RAG pipeline is local and uses lightweight vector stores for demo purposes; swap in a hosted vector DB for production scale.
+
+
+## Contributing
+
+Contributions and suggestions are welcome. Please open issues or PRs with clear descriptions and test coverage where appropriate.
+
+
+## License
+
+See the repository LICENSE file if present. If there is no license, consider adding one (e.g., MIT) to make reuse explicit.
+
+
+---
+
+If you'd like, I can also:
+- Add a short 'Deploy to Docker Hub' guide or GitHub Actions workflow to build & publish images.
+- Create example .env values and a lightweight seed dataset for quicker demos.
 
